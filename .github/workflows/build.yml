@@ -15,61 +15,67 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    defaults:
+      run:
+        shell: bash -o pipefail {0}
+
     steps:
-      - name: Checkout r8152
+      - name: Checkout r8152 into source/r8152
         uses: actions/checkout@v4
         with:
-          path: r8152
+          path: source/r8152
 
       - name: Clone pkgscripts-ng
-        run: |
-          git clone https://github.com/SynologyOpenSource/pkgscripts-ng.git pkgscripts
+        # pkgscripts must be a sibling of source/ so that
+        # SynoBase (dirname of pkgscripts) == GITHUB_WORKSPACE
+        run: git clone https://github.com/SynologyOpenSource/pkgscripts-ng.git pkgscripts
 
-      - name: Cache toolkit
+      - name: Cache toolkit tarballs
         uses: actions/cache@v4
         with:
           path: toolkit_tarballs
-          key: toolkit-${{ github.event.inputs.dsm_version }}-${{ github.event.inputs.platform }}
+          key: toolkit-${{ github.event.inputs.dsm_version }}-${{ github.event.inputs.platform }}-v1
 
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q python3 python3-pip cpio bc
+          sudo apt-get install -y -q python3 cpio bc kmod
 
       - name: Deploy build environment
         run: |
-          sudo mkdir -p /toolkit_tarballs
-          sudo ln -sfn $GITHUB_WORKSPACE/toolkit_tarballs /toolkit_tarballs
+          mkdir -p toolkit_tarballs
           cd pkgscripts
           sudo ./EnvDeploy \
             -v ${{ github.event.inputs.dsm_version }} \
             -p ${{ github.event.inputs.platform }} \
-            --no-sign 2>&1 | tee /tmp/envdeploy.log
-        env:
-          PYTHONUNBUFFERED: 1
+            -t $GITHUB_WORKSPACE/toolkit_tarballs \
+            2>&1 | tee /tmp/envdeploy.log
+          echo "--- EnvDeploy complete ---"
+          ls $GITHUB_WORKSPACE/build_env/ 2>/dev/null || echo "build_env not found"
 
       - name: Build package
         run: |
-          # Copy source into chroot
-          sudo cp -r r8152 /SynologyBuildSystem/${{ github.event.inputs.platform }}-${{ github.event.inputs.dsm_version }}/source/r8152
-
           cd pkgscripts
           sudo ./PkgCreate.py \
             -v ${{ github.event.inputs.dsm_version }} \
             -p ${{ github.event.inputs.platform }} \
-            --no-sign \
+            -S \
             r8152 2>&1 | tee /tmp/pkgcreate.log
 
       - name: Collect SPK
         run: |
           mkdir -p output
-          find /SynologyBuildSystem -name "*.spk" | while read f; do
+          find $GITHUB_WORKSPACE/build_env \
+               $GITHUB_WORKSPACE -maxdepth 1 \
+               -name "*.spk" 2>/dev/null | while read f; do
+            echo "Found SPK: $f"
             cp "$f" output/
-            echo "Found: $f"
           done
           ls -lh output/
 
-      - name: Upload SPK artifact
+      - name: Upload SPK
         uses: actions/upload-artifact@v4
         with:
           name: r8152-${{ github.event.inputs.platform }}-${{ github.event.inputs.dsm_version }}
