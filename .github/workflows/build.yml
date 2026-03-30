@@ -1,0 +1,86 @@
+name: Build SPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      dsm_version:
+        description: 'DSM version (e.g. 7.3)'
+        required: true
+        default: '7.3'
+      platform:
+        description: 'Platform (e.g. apollolake)'
+        required: true
+        default: 'apollolake'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout r8152
+        uses: actions/checkout@v4
+        with:
+          path: r8152
+
+      - name: Clone pkgscripts-ng
+        run: |
+          git clone https://github.com/SynologyOpenSource/pkgscripts-ng.git pkgscripts
+
+      - name: Cache toolkit
+        uses: actions/cache@v4
+        with:
+          path: toolkit_tarballs
+          key: toolkit-${{ github.event.inputs.dsm_version }}-${{ github.event.inputs.platform }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q python3 python3-pip cpio bc
+
+      - name: Deploy build environment
+        run: |
+          sudo mkdir -p /toolkit_tarballs
+          sudo ln -sfn $GITHUB_WORKSPACE/toolkit_tarballs /toolkit_tarballs
+          cd pkgscripts
+          sudo ./EnvDeploy \
+            -v ${{ github.event.inputs.dsm_version }} \
+            -p ${{ github.event.inputs.platform }} \
+            --no-sign 2>&1 | tee /tmp/envdeploy.log
+        env:
+          PYTHONUNBUFFERED: 1
+
+      - name: Build package
+        run: |
+          # Copy source into chroot
+          sudo cp -r r8152 /SynologyBuildSystem/${{ github.event.inputs.platform }}-${{ github.event.inputs.dsm_version }}/source/r8152
+
+          cd pkgscripts
+          sudo ./PkgCreate.py \
+            -v ${{ github.event.inputs.dsm_version }} \
+            -p ${{ github.event.inputs.platform }} \
+            --no-sign \
+            r8152 2>&1 | tee /tmp/pkgcreate.log
+
+      - name: Collect SPK
+        run: |
+          mkdir -p output
+          find /SynologyBuildSystem -name "*.spk" | while read f; do
+            cp "$f" output/
+            echo "Found: $f"
+          done
+          ls -lh output/
+
+      - name: Upload SPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: r8152-${{ github.event.inputs.platform }}-${{ github.event.inputs.dsm_version }}
+          path: output/*.spk
+          retention-days: 30
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            /tmp/envdeploy.log
+            /tmp/pkgcreate.log
